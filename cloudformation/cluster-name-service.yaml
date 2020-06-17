@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploy an ECS service with a Consul Connect sidecar
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: production
+    Description: The name of the environment to add this service to
+  ServiceName:
+    Type: String
+    Default: name
+    Description: A name for the service
+  ImageUrl:
+    Type: String
+    Default: nathanpeck/name
+    Description: The url of a docker image that contains the application process that
+                 will handle the traffic for this service
+  ContainerPort:
+    Type: Number
+    Default: 3000
+    Description: What port number the application inside the docker container is binding to
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    Description: How much CPU to give the container. 1024 is 1 CPU
+  ContainerMemory:
+    Type: Number
+    Default: 512
+    Description: How much memory in megabytes to give the container
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: How many copies of the service task to run
+  Role:
+    Type: String
+    Default: ""
+    Description: (Optional) An IAM role to give the service's containers if the code within needs to
+                 access other AWS resources like S3 buckets, DynamoDB tables, etc
+
+Conditions:
+  HasCustomRole: !Not [ !Equals [!Ref 'Role', ''] ]
+
+Resources:
+  # A log group for storing the stdout logs from this service's containers
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub ${EnvironmentName}-service-${ServiceName}
+
+  # The task definition. This is a simple metadata description of what
+  # container to run, and what resource requirements it has.
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref 'ServiceName'
+      Cpu: !Ref 'ContainerCpu'
+      Memory: !Ref 'ContainerMemory'
+      NetworkMode: awsvpc
+      TaskRoleArn:
+        Fn::If:
+          - 'HasCustomRole'
+          - !Ref 'Role'
+          - !Ref "AWS::NoValue"
+      ContainerDefinitions:
+
+        # This is the Consul Connect sidecar. It registers itself in Consul as a proxy for
+        # the service container, and accepts inbound traffic one port 8080, which it
+        # then forwards to the local service container. Additionally this sidecar can be
+        # used to expose remote services as localhost proxies to the service container.
+        - Name: !Sub ${ServiceName}-proxy
+          Image: 'consul:1.3.0'
+          EntryPoint:
+            - '/bin/sh'
+            - '-c'
+          PortMappings:
+            - ContainerPort: 8080
+          Command:
+            - !Sub >
+              exec consul connect proxy
+              -register
+              -service ${ServiceName}
+              -register-id $(hostname)
+              -http-addr $(curl http://169.254.169.254/latest/meta-data/local-ipv4):8500
+              -listen $(hostname -i):8080
+              -service-addr $(hostname -i):${ContainerPort}
+          Essential: true
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: !Sub ${EnvironmentName}-service-${ServiceName}
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: consul-connect
+
+        # The actual service container. It should only accept inbound traffic
+        # from Consul Connect, and if it needs to talk to another service it does
+        # so via a localhost proxy pipe opened by the Consul Connect sidecar
+        - Name: !Ref 'ServiceName'
+          Cpu: !Ref 'ContainerCpu'
+          Memory: !Ref 'ContainerMemory'
+          Image: !Ref 'ImageUrl'
+          Environment:
+            - Name: PORT
+              Value: !Ref 'ContainerPort'
+          Essential: true
+          LogConfiguration:
+            LogDriver: 'awslogs'
+            Options:
+              awslogs-group: !Sub ${EnvironmentName}-service-${ServiceName}
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: !Ref 'ServiceName'
+
+  # The service. The service is a resource which allows you to run multiple
+  # copies of a type of task, and gather up their logs and metrics, as well
+  # as monitor the number of running tasks and replace any that have crashed
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Ref 'ServiceName'
+      Cluster:
+        Fn::ImportValue: !Sub ${EnvironmentName}:ClusterName
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: !Ref 'DesiredCount'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          SecurityGroups:
+            - Fn::ImportValue: !Sub ${EnvironmentName}:ServiceSecurityGroup
+          Subnets:
+            - Fn::ImportValue: !Sub ${EnvironmentName}:PublicSubnetOne
+            - Fn::ImportValue: !Sub ${EnvironmentName}:PublicSubnetTwo
+      TaskDefinition: !Ref 'TaskDefinition'
