@@ -121,6 +121,7 @@ Resources:
               {
                 "advertise_addr": "${EC2_INSTANCE_IP_ADDRESS}",
                 "client_addr": "0.0.0.0",
+                "enable_central_service_config":true,
                 "connect": {
                   "enabled": true
                 }
@@ -132,7 +133,7 @@ Resources:
                 -v /opt/consul/data:/consul/data -v /opt/consul/config:/consul/config \
                 -v /var/run/docker.sock:/var/run/docker.sock \
                 -h $EC2_INSTANCE_ID --name consul-server -e CONSUL_ALLOW_PRIVILEGED_PORTS=1 \
-                -l service_name=consul-server consul:1.3.0 agent -server \
+                -l service_name=consul-server consul:1.7.0 agent -server \
                 -bootstrap-expect 1 -ui -config-file /consul/config/consul-server.json
             - !Sub |
               # Notify CloudFormation that the instance is up and ready
@@ -186,7 +187,7 @@ Resources:
           Name: consul-docker
       ContainerDefinitions:
         - Name: consul-agent
-          Image: docker.io/consul:1.3.0
+          Image: docker.io/consul:1.7.0
           EntryPoint:
             - '/bin/sh'
             - '-c'
@@ -220,7 +221,7 @@ Resources:
             # A few extra config values for the Consul agent, this enables the
             # Consul Connect features.
             - Name: CONSUL_LOCAL_CONFIG
-              Value: '{"connect":{"enabled":true}}'
+              Value: '{"enable_central_service_config":true,"connect":{"enabled":true}}'
           MountPoints:
             - ContainerPath: /consul/data
               SourceVolume: consul-data
