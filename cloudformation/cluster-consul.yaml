@@ -193,8 +193,7 @@ Resources:
             - '-c'
           Command:
             - !Sub >
-                exec consul agent -ui
-                -data-dir /consul/data
+                exec docker-entrypoint.sh agent -ui
                 -advertise $(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)
                 -client 0.0.0.0
                 -node $(curl -s http://169.254.169.254/latest/meta-data/instance-id)
